@@ -110,7 +110,6 @@ impl DifficultyValues {
 
         let mut skills = OsuSkills::new(mods, &scaling_factor, &map_attrs, time_preempt);
 
-        // The first hit object has no difficulty object
         let take_diff_objects = cmp::min(map.hit_objects.len(), take).saturating_sub(1);
 
         for hit_object in diff_objects.iter().take(take_diff_objects) {
@@ -120,7 +119,6 @@ impl DifficultyValues {
         Self { skills, attrs }
     }
 
-    /// Process the difficulty values and store the results in `attrs`.
     pub fn eval(attrs: &mut OsuDifficultyAttributes, mods: &GameMods, skills: &OsuSkills) {
         let OsuSkills {
             aim,
@@ -147,7 +145,8 @@ impl DifficultyValues {
 
         let speed_difficulty_value = speed.cloned_difficulty_value();
         let mut speed_rating = f64::sqrt(speed_difficulty_value) * DIFFICULTY_MULTIPLIER;
-        let speed_difficult_strain_count = speed.count_top_weighted_strains(speed_difficulty_value);
+        let speed_difficult_strain_count =
+            speed.count_top_weighted_strains(speed_difficulty_value);
 
         let mut flashlight_rating =
             f64::sqrt(flashlight.cloned_difficulty_value()) * DIFFICULTY_MULTIPLIER;
@@ -157,11 +156,9 @@ impl DifficultyValues {
             flashlight_rating = flashlight_rating.powf(0.8);
         }
 
-        if mods.rx() {
-            aim_rating *= 0.9;
-            speed_rating = 0.0;
-            flashlight_rating *= 0.7;
-        } else if mods.ap() {
+        // RX nerfs REMOVED completely
+
+        if mods.ap() {
             speed_rating *= 0.5;
             aim_rating = 0.0;
             flashlight_rating *= 0.4;
@@ -237,4 +234,4 @@ impl DifficultyValues {
             })
             .collect()
     }
-}
+                 }
