@@ -69,23 +69,20 @@ impl OsuPerformanceCalculator<'_> {
             // * https://www.desmos.com/calculator/bc9eybdthb
             // * we use OD13.3 as maximum since it's the value at which great hitwidow becomes 0
             // * this is well beyond currently maximum achievable OD which is 12.17 (DTx2 + DA with OD11)
-            let (n100_mult, n50_mult) = if od > 0.0 {
-                (
-                    (1.0 - (od / 13.33).powf(1.8)).max(0.0),
-                    (1.0 - (od / 13.33).powf(5.0)).max(0.0),
-                )
+            let (n50_mult) = if od > 0.0 {
+                (1.0 - (od / 13.33).powf(5.0)).max(0.0)
             } else {
-                (1.0, 1.0)
+                (1.0)
             };
 
             // * As we're adding Oks and Mehs to an approximated number of combo breaks the result can be
             // * higher than total hits in specific scenarios (which breaks some calculations) so we need to clamp it.
             self.effective_miss_count = (self.effective_miss_count
-                + f64::from(self.state.n100) * n100_mult
                 + f64::from(self.state.n50) * n50_mult)
                 .min(total_hits);
         }
 
+        
         if self.mods.nf() {
             multiplier *= (1.0 - 0.02 * self.effective_miss_count).max(0.9);
         }
