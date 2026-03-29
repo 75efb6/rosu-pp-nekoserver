@@ -85,15 +85,15 @@ impl Strain {
                 hold_factor = 1.1;
 
                 let hold_duration = self.end_times[i] - self.start_times[i];
-                ln_penalty *= 1.0 - (hold_duration / 1500.0).min(0.25);
+                ln_penalty *= 1.0 - (hold_duration / 1200.0).min(0.3);
             }
 
             closest_end_time = (end_time - self.end_times[i]).abs().min(closest_end_time);
         }
 
         if is_overlapping {
-            hold_addition = 0.6
-                * logistic(closest_end_time, Self::RELEASE_THRESHOLD, 0.27, None);
+            hold_addition =
+                0.3 * logistic(closest_end_time, Self::RELEASE_THRESHOLD, 0.27, None);
         }
 
         // ========================
@@ -105,49 +105,51 @@ impl Strain {
             let delta = curr.delta_time;
 
             if delta < 120.0 {
-                rice_bonus += 0.2;
+                rice_bonus += 0.12;
             }
             if delta < 90.0 {
-                rice_bonus += 0.25;
+                rice_bonus += 0.12;
             }
             if delta < 60.0 {
-                rice_bonus += 0.3;
+                rice_bonus += 0.15;
             }
 
             if let Some(prev) = curr.previous(0, objects) {
                 if (prev.delta_time - delta).abs() < 5.0 {
-                    rice_bonus += 0.15;
+                    rice_bonus += 0.08;
                 }
             }
         }
 
         // ========================
-        // Complexity bonus
+        // Complexity bonus (additive)
         // ========================
-        let mut complexity_bonus = 1.0;
+        let mut complexity_bonus = 0.0;
 
         if let Some(prev) = curr.previous(0, objects) {
             let column_diff =
                 (column as i32 - prev.base_column as i32).abs();
 
             if column_diff > 0 {
-                complexity_bonus += 0.15;
+                complexity_bonus += 0.08;
             }
 
             if column_diff > 1 {
-                complexity_bonus += 0.1;
+                complexity_bonus += 0.05;
             }
 
             let delta_diff = (curr.delta_time - prev.delta_time).abs();
 
             if delta_diff > 10.0 {
-                complexity_bonus += 0.1;
+                complexity_bonus += 0.05;
             }
 
             if delta_diff > 25.0 {
-                complexity_bonus += 0.15;
+                complexity_bonus += 0.08;
             }
         }
+
+        let total_bonus = (rice_bonus + complexity_bonus).min(1.6);
 
         // ========================
         // Individual strain
@@ -159,7 +161,7 @@ impl Strain {
         );
 
         self.individual_strains[column] +=
-            2.4 * rice_bonus * complexity_bonus * hold_factor * ln_penalty;
+            1.9 * total_bonus * hold_factor * ln_penalty;
 
         self.individual_strain = if curr.delta_time <= 1.0 {
             self.individual_strain.max(self.individual_strains[column])
@@ -177,10 +179,9 @@ impl Strain {
         );
 
         self.overall_strain +=
-            (1.0 + 0.5 * hold_addition)
+            (1.0 + hold_addition)
+            * total_bonus
             * hold_factor
-            * rice_bonus
-            * complexity_bonus
             * ln_penalty;
 
         // ========================
@@ -200,4 +201,4 @@ impl Strain {
 // ========================
 fn apply_decay(value: f64, delta_time: f64, decay_base: f64) -> f64 {
     value * f64::powf(decay_base, delta_time / 1000.0)
-}
+        }
