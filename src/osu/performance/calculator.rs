@@ -104,7 +104,7 @@ impl OsuPerformanceCalculator<'_> {
                 let acc_depression = (0.86 - acc_factor).max(0.5);
 
                 aim_value *= acc_depression;
-                speed_value *= acc_depression;
+                speed_value = speed_value.powf(0.83 * acc_depression);
             }
         }
 
