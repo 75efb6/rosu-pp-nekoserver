@@ -60,7 +60,6 @@ impl OsuPerformanceCalculator<'_> {
         }
 
         let total_hits = f64::from(total_hits);
-
         let mut multiplier = PERFORMANCE_BASE_MULTIPLIER;
 
         if self.mods.rx() {
@@ -90,8 +89,9 @@ impl OsuPerformanceCalculator<'_> {
         let mut aim_value = self.compute_aim_value();
         let mut speed_value = self.compute_speed_value(speed_deviation);
         let acc_value = self.compute_accuracy_value();
-        let flashlight_value = self.compute_flashlight_value(); 
-    
+        let flashlight_value = self.compute_flashlight_value();
+
+        // ✅ Akatsuki RX stream nerf
         if self.mods.rx() {
             let aim_strain = self.attrs.aim;
             let speed_strain = self.attrs.speed.max(1e-6);
@@ -104,8 +104,6 @@ impl OsuPerformanceCalculator<'_> {
                 let acc_depression = (0.86 - acc_factor).max(0.5);
 
                 aim_value *= acc_depression;
-
-                // slight speed influence (kept mild)
                 speed_value *= acc_depression;
             }
         }
@@ -176,7 +174,9 @@ impl OsuPerformanceCalculator<'_> {
 
         let len_bonus = 0.95
             + 0.4 * (total_hits / 2000.0).min(1.0)
-            + f64::from(u8::from(total_hits > 2000.0)) * (total_hits / 2000.0).log10() * 0.5;
+            + f64::from(u8::from(total_hits > 2000.0))
+                * (total_hits / 2000.0).log10()
+                * 0.5;
 
         aim_value *= len_bonus;
 
@@ -213,5 +213,284 @@ impl OsuPerformanceCalculator<'_> {
         aim_value
     }
 
-    // rest of file unchanged...
+    fn compute_speed_value(&self, speed_deviation: Option<f64>) -> f64 {
+        let Some(speed_deviation) = speed_deviation else {
+            return 0.0;
+        };
+
+        let mut speed_value = Speed::difficulty_to_performance(self.attrs.speed);
+
+        let total_hits = self.total_hits();
+
+        let len_bonus = 0.95
+            + 0.4 * (total_hits / 2000.0).min(1.0)
+            + f64::from(u8::from(total_hits > 2000.0))
+                * (total_hits / 2000.0).log10()
+                * 0.5;
+
+        speed_value *= len_bonus;
+
+        if self.effective_miss_count > 0.0 {
+            speed_value *= Self::calculate_miss_penalty(
+                self.effective_miss_count,
+                self.attrs.speed_difficult_strain_count,
+            );
+        }
+
+        let ar_factor = if self.mods.ap() {
+            0.0
+        } else if self.attrs.ar > 10.33 {
+            0.3 * (self.attrs.ar - 10.33)
+        } else {
+            0.0
+        };
+
+        speed_value *= 1.0 + ar_factor * len_bonus;
+
+        if self.mods.bl() {
+            speed_value *= 1.12;
+        } else if self.mods.hd() || self.mods.tc() {
+            speed_value *= 1.0 + 0.04 * (12.0 - self.attrs.ar);
+        }
+
+        let speed_high_deviation_mult =
+            self.calculate_speed_high_deviation_nerf(speed_deviation);
+
+        speed_value *= speed_high_deviation_mult;
+
+        let relevant_total_diff = f64::max(0.0, total_hits - self.attrs.speed_note_count);
+
+        let relevant_n300 = (f64::from(self.state.n300) - relevant_total_diff).max(0.0);
+
+        let relevant_n100 = (f64::from(self.state.n100)
+            - (relevant_total_diff - f64::from(self.state.n300)).max(0.0))
+        .max(0.0);
+
+        let relevant_n50 = (f64::from(self.state.n50)
+            - (relevant_total_diff - f64::from(self.state.n300 + self.state.n100)).max(0.0))
+        .max(0.0);
+
+        let relevant_acc = if self.attrs.speed_note_count.eq(0.0) {
+            0.0
+        } else {
+            (relevant_n300 * 6.0 + relevant_n100 * 2.0 + relevant_n50)
+                / (self.attrs.speed_note_count * 6.0)
+        };
+
+        let od = self.attrs.od();
+
+        speed_value *= (0.95 + f64::powf(f64::max(0.0, od), 2.0) / 750.0)
+            * f64::powf((self.acc + relevant_acc) / 2.0, (14.5 - od) / 2.0);
+
+        speed_value
+    }
+
+    fn compute_accuracy_value(&self) -> f64 {
+        let mut amount_hit_objects_with_acc = self.attrs.n_circles;
+
+        if !self.using_classic_slider_acc {
+            amount_hit_objects_with_acc += self.attrs.n_sliders;
+        }
+
+        let mut better_acc_percentage = if amount_hit_objects_with_acc > 0 {
+            f64::from(
+                (self.state.n300 as i32
+                    - (i32::max(
+                        self.state.total_hits() as i32 - amount_hit_objects_with_acc as i32,
+                        0,
+                    )))
+                    * 6
+                    + self.state.n100 as i32 * 2
+                    + self.state.n50 as i32,
+            ) / f64::from(amount_hit_objects_with_acc * 6)
+        } else {
+            0.0
+        };
+
+        if better_acc_percentage < 0.0 {
+            better_acc_percentage = 0.0;
+        }
+
+        let mut acc_value =
+            1.52163_f64.powf(self.attrs.od()) * better_acc_percentage.powf(24.0) * 2.83;
+
+        acc_value *= (f64::from(amount_hit_objects_with_acc) / 1000.0)
+            .powf(0.3)
+            .min(1.15);
+
+        if self.mods.bl() {
+            acc_value *= 1.14;
+        } else if self.mods.hd() || self.mods.tc() {
+            acc_value *= 1.08;
+        }
+
+        if self.mods.fl() {
+            acc_value *= 1.02;
+        }
+
+        acc_value
+    }
+
+    fn compute_flashlight_value(&self) -> f64 {
+        if !self.mods.fl() {
+            return 0.0;
+        }
+
+        let mut flashlight_value =
+            Flashlight::difficulty_to_performance(self.attrs.flashlight);
+
+        let total_hits = self.total_hits();
+
+        if self.effective_miss_count > 0.0 {
+            flashlight_value *= 0.97
+                * (1.0 - (self.effective_miss_count / total_hits).powf(0.775))
+                    .powf(self.effective_miss_count.powf(0.875));
+        }
+
+        flashlight_value *= self.get_combo_scaling_factor();
+
+        flashlight_value *= 0.7
+            + 0.1 * (total_hits / 200.0).min(1.0)
+            + f64::from(u8::from(total_hits > 200.0))
+                * 0.2
+                * ((total_hits - 200.0) / 200.0).min(1.0);
+
+        flashlight_value *= 0.5 + self.acc / 2.0;
+        flashlight_value *= 0.98 + f64::powf(f64::max(0.0, self.attrs.od()), 2.0) / 2500.0;
+
+        flashlight_value
+    }
+
+    fn calculate_speed_deviation(&self) -> Option<f64> {
+        if total_successful_hits(&self.state) == 0 {
+            return None;
+        }
+
+        let mut speed_note_count = self.attrs.speed_note_count;
+        speed_note_count +=
+            (f64::from(self.state.total_hits()) - self.attrs.speed_note_count) * 0.1;
+
+        let relevant_count_miss = f64::min(f64::from(self.state.misses), speed_note_count);
+        let relevant_count_meh = f64::min(
+            f64::from(self.state.n50),
+            speed_note_count - relevant_count_miss,
+        );
+        let relevant_count_ok = f64::min(
+            f64::from(self.state.n100),
+            speed_note_count - relevant_count_miss - relevant_count_meh,
+        );
+        let relevant_count_great = f64::max(
+            0.0,
+            speed_note_count - relevant_count_miss - relevant_count_meh - relevant_count_ok,
+        );
+
+        self.calculate_deviation(
+            relevant_count_great,
+            relevant_count_ok,
+            relevant_count_meh,
+            relevant_count_miss,
+        )
+    }
+
+    fn calculate_deviation(
+        &self,
+        relevant_count_great: f64,
+        relevant_count_ok: f64,
+        relevant_count_meh: f64,
+        relevant_count_miss: f64,
+    ) -> Option<f64> {
+        if relevant_count_great + relevant_count_ok + relevant_count_meh <= 0.0 {
+            return None;
+        }
+
+        let object_count =
+            relevant_count_great + relevant_count_ok + relevant_count_meh + relevant_count_miss;
+
+        let n = f64::max(1.0, object_count - relevant_count_miss - relevant_count_meh);
+
+        const Z: f64 = 2.32634787404;
+
+        let p = relevant_count_great / n;
+
+        let p_lower_bound = (n * p + Z * Z / 2.0) / (n + Z * Z)
+            - Z / (n + Z * Z)
+                * f64::sqrt(n * p * (1.0 - p) + Z * Z / 4.0);
+
+        let great_hit_window: f64 = self.attrs.great_hit_window;
+        let ok_hit_window: f64 = self.attrs.ok_hit_window;
+        let meh_hit_window: f64 = self.attrs.meh_hit_window;
+
+        let mut deviation =
+            great_hit_window / (f64::sqrt(2.0) * erf_inv(p_lower_bound));
+
+        let random_value = f64::sqrt(2.0 / PI)
+            * ok_hit_window
+            * f64::exp(-0.5 * f64::powf(ok_hit_window / deviation, 2.0))
+            / (deviation * erf(ok_hit_window / (f64::sqrt(2.0) * deviation)));
+
+        deviation *= f64::sqrt(1.0 - random_value);
+
+        let limit_value = ok_hit_window / f64::sqrt(3.0);
+
+        if p_lower_bound == 0.0 || random_value >= 1.0 || deviation > limit_value {
+            deviation = limit_value;
+        }
+
+        let meh_variance = (meh_hit_window * meh_hit_window
+            + ok_hit_window * meh_hit_window
+            + ok_hit_window * ok_hit_window)
+            / 3.0;
+
+        let deviation = f64::sqrt(
+            ((relevant_count_great + relevant_count_ok) * f64::powf(deviation, 2.0)
+                + relevant_count_meh * meh_variance)
+                / (relevant_count_great + relevant_count_ok + relevant_count_meh),
+        );
+
+        Some(deviation)
+    }
+
+    fn calculate_speed_high_deviation_nerf(&self, speed_deviation: f64) -> f64 {
+        let speed_value = Speed::difficulty_to_performance(self.attrs.speed);
+
+        let excess_speed_difficulty_cutoff =
+            100.0 + 220.0 * f64::powf(22.0 / speed_deviation, 6.5);
+
+        if speed_value <= excess_speed_difficulty_cutoff {
+            return 1.0;
+        }
+
+        const SCALE: f64 = 50.0;
+
+        let mut adjusted_speed_value = SCALE
+            * (f64::ln((speed_value - excess_speed_difficulty_cutoff) / SCALE + 1.0)
+                + excess_speed_difficulty_cutoff / SCALE);
+
+        let lerp = 1.0 - reverse_lerp(speed_deviation, 22.0, 27.0);
+        adjusted_speed_value = f64::lerp(adjusted_speed_value, speed_value, lerp);
+
+        adjusted_speed_value / speed_value
+    }
+
+    fn calculate_miss_penalty(miss_count: f64, diff_strain_count: f64) -> f64 {
+        0.96 / ((miss_count / (4.0 * diff_strain_count.ln().powf(0.94))) + 1.0)
+    }
+
+    fn get_combo_scaling_factor(&self) -> f64 {
+        if self.attrs.max_combo == 0 {
+            1.0
+        } else {
+            (f64::from(self.state.max_combo).powf(0.8)
+                / f64::from(self.attrs.max_combo).powf(0.8))
+            .min(1.0)
+        }
+    }
+
+    const fn total_hits(&self) -> f64 {
+        self.state.total_hits() as f64
+    }
 }
+
+const fn total_successful_hits(state: &OsuScoreState) -> u32 {
+    state.n300 + state.n100 + state.n50
+                            }
